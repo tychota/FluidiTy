@@ -20,7 +20,8 @@
 //          CheckSameResults, WriteDigestOfResults
 // Uses:    Mat3 (base/mat3.h), Vec3 (base/vec3.h), WriteResultDigest (base/testing/base_support.h), CellCorners,
 //          FaceCorners, CellsAroundEdge (grid/cell_corners.h), CellsNearFace (grid/face_search.h), the results of
-//          grid/testing/grid_functions_answers.h, the id types (grid/grid_ids.h), FaceWeight, NearbyFaceWeights
+//          grid/testing/grid_functions_answers.h, the id types (grid/grid_ids.h), NewCellNeighbors
+//          (grid/new_cell_rule.h), FaceWeight, NearbyFaceWeights
 //          (grid/nearby_face_weights.h), TouchingCells, CellFacePieces (grid/touching_cells.h), GoogleTest
 // Used by: the GPU tests of the grid in tests/grid/ that compare a runner with the CPU
 // Read:    docs/method-paper/fluidity-method.typ <sec-run-on>
@@ -48,6 +49,7 @@
 #include "fluidity/grid/face_search.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/nearby_face_weights.h"
+#include "fluidity/grid/new_cell_rule.h"
 #include "fluidity/grid/testing/grid_functions_answers.h"
 #include "fluidity/grid/touching_cells.h"
 
@@ -201,6 +203,11 @@ inline void ApplyWordsOf(const TouchingCells& touching, ResultWords& words) {
   for (const CellPlaceIndex cell : touching.cells) {
     words.AddEntry("cells", entry++, cell.value);
   }
+}
+
+inline void ApplyWordsOf(const NewCellNeighbors& neighbors, ResultWords& words) {
+  words.Add("touches_much_smaller_cell", neighbors.touches_much_smaller_cell ? 1 : 0);
+  words.Add("touches_bigger_cell", neighbors.touches_bigger_cell ? 1 : 0);
 }
 
 inline void ApplyWordsOf(const CellFacePieces& face_pieces, ResultWords& words) {

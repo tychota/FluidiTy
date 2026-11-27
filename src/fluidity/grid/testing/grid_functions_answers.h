@@ -20,6 +20,7 @@
 //          FindCellsAtPosition, ComputeNearbyFaceResult, ComputeFaceWeightResult,
 //          ComputeFormulaResult, ComputeCellPlaceFacts, ComputeFacePlaceFacts, FindCellCornersOf, FindFaceCornersOf,
 //          ComputeCornerPositionOf, FindCellsAroundEdgeOf, FindTouchingCellsOf, FindFacePiecesOf,
+//          FindNewCellNeighborsOf,
 //          FindCellsNearFaceOf, FindFaceSearchWalk
 // Uses:    BorderWidth, BlockSet, ComputeIsBorderBlock, ApplyCellPlaceReadMarks, ApplyFacePlaceReadMarks
 //          (grid/border_block_steps.h), ToPiecePlace, ToPieceNeighbour, ComputePieceFaceKind
@@ -32,6 +33,7 @@
 //          types and ComputeSmallCell (grid/grid_ids.h), GridTables, ComputeCellCenter, ComputeCellCenterDistance,
 //          FindCellPlace, FindFacePlace, ToFacePieceId (grid/grid_tables.h), NearbyFaceList, NearbyFaceMask,
 //          NearbyFaceWeights, FaceWeight, FindNearbyFaces, ToMaskOfAll, ComputeNearbyFaceWeights, ComputeFaceWeight,
+//          NewCellNeighbors, FindNewCellNeighbors (grid/new_cell_rule.h),
 //          ToNearbyFaceSums (grid/nearby_face_weights.h), TouchingCells, CellFacePieces, FindTouchingCells,
 //          FindFacePieces (grid/touching_cells.h), ComputeCompleteWeightedSpread (grid/weight_curve.h)
 // Used by: testing/grid_functions_runner_gpu.h, testing/grid_functions_result_words.h and the GPU tests of the grid
@@ -56,6 +58,7 @@
 #include "fluidity/grid/grid_piece_steps.h"
 #include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/nearby_face_weights.h"
+#include "fluidity/grid/new_cell_rule.h"
 #include "fluidity/grid/touching_cells.h"
 #include "fluidity/grid/weight_curve.h"
 
@@ -182,6 +185,11 @@ FLUIDITY_CPU_AND_GPU inline CellsAroundEdge FindCellsAroundEdgeOf(const GridTabl
 // Answers one FindTouchingCells query.
 FLUIDITY_CPU_AND_GPU inline TouchingCells FindTouchingCellsOf(const GridTables& tables, const CellPlaceIndex& cell) {
   return FindTouchingCells(tables, cell);
+}
+
+// Answers one FindNewCellNeighbors query.
+FLUIDITY_CPU_AND_GPU inline NewCellNeighbors FindNewCellNeighborsOf(const GridTables& tables, const CellId& new_cell) {
+  return FindNewCellNeighbors(tables, new_cell);
 }
 
 // Answers one FindFacePieces query.

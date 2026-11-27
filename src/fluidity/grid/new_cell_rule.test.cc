@@ -10,6 +10,7 @@
 #include "fluidity/base/run_on.h"
 #include "fluidity/grid/grid_error.h"
 #include "fluidity/grid/grid_ids.h"
+#include "fluidity/grid/grid_tables.h"
 #include "fluidity/grid/staggered_grid.h"
 #include "fluidity/grid/testing/grid_support.h"
 #include "fluidity/grid/testing/new_cell_rule_cases.h"
@@ -34,27 +35,32 @@ NewCellNeighbors FindHandFacts(const std::vector<HandCase>& hand_cases, CellId n
   return {.touches_much_smaller_cell = false, .touches_bigger_cell = false};
 }
 
-// Checks the reference against the hand-worked facts of `new_cell` in the near-small grid.
-void CheckNearSmallFacts(CellId new_cell) {
-  const std::vector<CellId> cells = BuildNearSmallCells();
-  const std::expected<TestGrid, GridFailure> test_grid = BuildHandGrid(cells);
-  ASSERT_TRUE(test_grid.has_value());
-  const NewCellNeighbors expected = FindHandFacts(BuildNearSmallCases(), new_cell);
-  const NewCellNeighbors actual = ComputeNewCellNeighborsByAllCells(test_grid->grid.tables(RunOn::kCpu), new_cell);
+// Checks that both facts are the expected ones.
+void CheckFacts(const NewCellNeighbors& actual, const NewCellNeighbors& expected) {
   EXPECT_EQ(actual.touches_much_smaller_cell, expected.touches_much_smaller_cell);
   EXPECT_EQ(actual.touches_bigger_cell, expected.touches_bigger_cell);
 }
 
-// Checks the reference against the hand-worked facts of both new cells of the range-end grid.
+// Checks the function and the reference against the hand-worked facts of `new_cell` in the near-small grid.
+void CheckNearSmallFacts(CellId new_cell) {
+  const std::vector<CellId> cells = BuildNearSmallCells();
+  const std::expected<TestGrid, GridFailure> test_grid = BuildHandGrid(cells);
+  ASSERT_TRUE(test_grid.has_value());
+  const GridTables tables = test_grid->grid.tables(RunOn::kCpu);
+  const NewCellNeighbors expected = FindHandFacts(BuildNearSmallCases(), new_cell);
+  CheckFacts(FindNewCellNeighbors(tables, new_cell), expected);
+  CheckFacts(ComputeNewCellNeighborsByAllCells(tables, new_cell), expected);
+}
+
+// Checks the function and the reference against the hand-worked facts of both new cells of the range-end grid.
 void CheckRangeEndFacts() {
   const std::vector<CellId> cells = BuildRangeEndCells();
   const std::expected<TestGrid, GridFailure> test_grid = BuildHandGrid(cells);
   ASSERT_TRUE(test_grid.has_value());
+  const GridTables tables = test_grid->grid.tables(RunOn::kCpu);
   for (const HandCase& hand_case : BuildRangeEndCases()) {
-    const NewCellNeighbors actual =
-        ComputeNewCellNeighborsByAllCells(test_grid->grid.tables(RunOn::kCpu), hand_case.new_cell);
-    EXPECT_EQ(actual.touches_much_smaller_cell, hand_case.expected.touches_much_smaller_cell);
-    EXPECT_EQ(actual.touches_bigger_cell, hand_case.expected.touches_bigger_cell);
+    CheckFacts(FindNewCellNeighbors(tables, hand_case.new_cell), hand_case.expected);
+    CheckFacts(ComputeNewCellNeighborsByAllCells(tables, hand_case.new_cell), hand_case.expected);
   }
 }
 
@@ -68,55 +74,55 @@ TEST(NewCellRuleCases, HandGrids_BuildAsValidGrids) {
   EXPECT_TRUE(BuildHandGrid(range_end_cells).has_value());
 }
 
-TEST(ComputeNewCellNeighborsByAllCells, BiggestCellBesideSmallCells_MustSplit) {
+TEST(FindNewCellNeighbors, BiggestCellBesideSmallCells_MustSplit) {
   CheckNearSmallFacts(ToHandCell(0, 1, 0, 0));
 }
 
-TEST(ComputeNewCellNeighborsByAllCells, SizeLevelOneCellBesideSmallCorner_MustSplit) {
+TEST(FindNewCellNeighbors, SizeLevelOneCellBesideSmallCorner_MustSplit) {
   CheckNearSmallFacts(ToHandCell(1, 2, 1, 0));
 }
 
-TEST(ComputeNewCellNeighborsByAllCells, SizeLevelOneCellBesideBiggerCell_TouchesBigger) {
+TEST(FindNewCellNeighbors, SizeLevelOneCellBesideBiggerCell_TouchesBigger) {
   CheckNearSmallFacts(ToHandCell(1, 2, 0, 0));
 }
 
-TEST(ComputeNewCellNeighborsByAllCells, SizeLevelOneCellBesideSizeLevelTwoOnly_NeitherFact) {
+TEST(FindNewCellNeighbors, SizeLevelOneCellBesideSizeLevelTwoOnly_NeitherFact) {
   CheckNearSmallFacts(ToHandCell(1, 2, 1, 1));
 }
 
-TEST(ComputeNewCellNeighborsByAllCells, SizeLevelTwoCellOnLastButOneSizeLevel_TouchesBigger) {
+TEST(FindNewCellNeighbors, SizeLevelTwoCellOnLastButOneSizeLevel_TouchesBigger) {
   CheckNearSmallFacts(ToHandCell(2, 4, 2, 0));
 }
 
-TEST(ComputeNewCellNeighborsByAllCells, SizeLevelTwoCellBesideSmallestCells_NeitherFact) {
+TEST(FindNewCellNeighbors, SizeLevelTwoCellBesideSmallestCells_NeitherFact) {
   CheckNearSmallFacts(ToHandCell(2, 4, 3, 0));
 }
 
-TEST(ComputeNewCellNeighborsByAllCells, LastSizeLevelCellBesideSameSize_NeitherFact) {
+TEST(FindNewCellNeighbors, LastSizeLevelCellBesideSameSize_NeitherFact) {
   CheckNearSmallFacts(ToHandCell(3, 8, 7, 0));
 }
 
-TEST(ComputeNewCellNeighborsByAllCells, LastSizeLevelCellBesideBiggerCell_TouchesBigger) {
+TEST(FindNewCellNeighbors, LastSizeLevelCellBesideBiggerCell_TouchesBigger) {
   CheckNearSmallFacts(ToHandCell(3, 8, 5, 0));
 }
 
-TEST(ComputeNewCellNeighborsByAllCells, BoxTouchingNothing_NeitherFact) {
+TEST(FindNewCellNeighbors, BoxTouchingNothing_NeitherFact) {
   CheckNearSmallFacts(ToHandCell(0, 5, 5, 5));
 }
 
-TEST(ComputeNewCellNeighborsByAllCells, CornerOnlyOfSameSize_NeitherFact) {
+TEST(FindNewCellNeighbors, CornerOnlyOfSameSize_NeitherFact) {
   CheckNearSmallFacts(ToHandCell(0, 2, 0, 1));
 }
 
-TEST(ComputeNewCellNeighborsByAllCells, CornerOnlyOfBiggerCell_TouchesBigger) {
+TEST(FindNewCellNeighbors, CornerOnlyOfBiggerCell_TouchesBigger) {
   CheckNearSmallFacts(ToHandCell(1, 4, 0, 2));
 }
 
-TEST(ComputeNewCellNeighborsByAllCells, CornerOnlyOfSmallestCell_MustSplit) {
+TEST(FindNewCellNeighbors, CornerOnlyOfSmallestCell_MustSplit) {
   CheckNearSmallFacts(ToHandCell(0, 1, 1, -1));
 }
 
-TEST(ComputeNewCellNeighborsByAllCells, BoxesAtBothEndsOfIdRange_NeitherFact) {
+TEST(FindNewCellNeighbors, BoxesAtBothEndsOfIdRange_NeitherFact) {
   CheckRangeEndFacts();
 }
 

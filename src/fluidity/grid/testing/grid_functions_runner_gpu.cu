@@ -281,6 +281,11 @@ FindTouchingCellsOnGpu(const GridTables& tables, const CellPlaceIndex* queries, 
 }
 
 RunOnCallStatus
+FindNewCellNeighborsOnGpu(const GridTables& tables, const CellId* queries, int count, NewCellNeighbors* results) {
+  return RunOneThreadPerQuery<CellId, NewCellNeighbors, FindNewCellNeighborsOf>(tables, queries, count, results);
+}
+
+RunOnCallStatus
 FindFacePiecesOnGpu(const GridTables& tables, const CellPlaceIndex* queries, int count, CellFacePieces* results) {
   return RunOneThreadPerQuery<CellPlaceIndex, CellFacePieces, FindFacePiecesOf>(tables, queries, count, results);
 }
@@ -528,7 +533,7 @@ RunOnCallStatus ComputeBorderBlockResultsOnGpu(
 RunOnCallStatus ReadRunnerFunctionInfo(std::vector<RunnerFunctionInfo>* functions) {
   ApplyNoLastFailure();
   std::vector<RunnerFunctionInfo> read;
-  const std::array<RunOnCallStatus, 17> statuses = {
+  const std::array<RunOnCallStatus, 18> statuses = {
       AddFunctionInfo<FindCellAtQuery, FoundCells, FindCellsAtPosition>("FindCellsAtOnGpu", read),
       AddFunctionInfo<NearbyFaceQuery, NearbyFaceResult, ComputeNearbyFaceResult>(
           "ComputeNearbyFaceResultsOnGpu",
@@ -543,6 +548,7 @@ RunOnCallStatus ReadRunnerFunctionInfo(std::vector<RunnerFunctionInfo>* function
       AddFunctionInfo<CornerPlaceIndex, Vec3, ComputeCornerPositionOf>("ComputeCornerPositionsOnGpu", read),
       AddFunctionInfo<EdgeQuery, CellsAroundEdge, FindCellsAroundEdgeOf>("FindCellsAroundEdgesOnGpu", read),
       AddFunctionInfo<CellPlaceIndex, TouchingCells, FindTouchingCellsOf>("FindTouchingCellsOnGpu", read),
+      AddFunctionInfo<CellId, NewCellNeighbors, FindNewCellNeighborsOf>("FindNewCellNeighborsOnGpu", read),
       AddFunctionInfo<CellPlaceIndex, CellFacePieces, FindFacePiecesOf>("FindFacePiecesOnGpu", read),
       AddFunctionInfo<FacePlaceIndex, CellsNearFace, FindCellsNearFaceOf>("FindCellsNearFacesOnGpu", read),
       AddFunctionInfo<FaceSearchQuery, FaceSearchWalk, FindFaceSearchWalk>("WalkFaceSearchesOnGpu", read),

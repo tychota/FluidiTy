@@ -1,6 +1,6 @@
 // Proves that the shared headers grid/cell_size_rule.h, grid/grid_build_status.h, grid/grid_build_steps.h,
 // grid/grid_ids.h, grid/grid_tables.h, grid/find_cell_at.h, grid/touching_cells.h, grid/cell_corners.h,
-// grid/face_search.h and grid/weight_curve.h compile as GPU code:
+// grid/face_search.h, grid/new_cell_rule.h and grid/weight_curve.h compile as GPU code:
 // label no_gpu.
 //
 // The GPU function below is never launched. Compiling it in the CUDA container makes the CUDA compiler generate GPU
@@ -28,6 +28,7 @@
 #include "fluidity/grid/grid_build_steps.h"
 #include "fluidity/grid/grid_ids.h"
 #include "fluidity/grid/grid_tables.h"
+#include "fluidity/grid/new_cell_rule.h"
 #include "fluidity/grid/touching_cells.h"
 #include "fluidity/grid/weight_curve.h"
 
@@ -176,6 +177,10 @@ __global__ void ComputeWithEverySharedGridFunction(
   const CellFacePieces cell_face_pieces = FindFacePieces(tables, CellPlaceIndex{place});
   results[result_index++] = static_cast<std::uint64_t>(cell_face_pieces.count)
       + cell_face_pieces.faces[place % static_cast<std::uint32_t>(kMaxCellFacePieces)].value;
+  // new_cell_rule.h: what the committed cells around a cell that is not in the grid say about it.
+  const NewCellNeighbors new_cell_neighbors = FindNewCellNeighbors(tables, cell);
+  results[result_index++] =
+      (new_cell_neighbors.touches_much_smaller_cell ? 2U : 0U) + (new_cell_neighbors.touches_bigger_cell ? 1U : 0U);
   // cell_corners.h: where the corners of a cell and of a face piece are stored, and the cells around an edge.
   const CellCorners cell_corners = FindCornerPlaces(tables, CellPlaceIndex{place});
   const FaceCorners face_corners = FindCornerPlaces(tables, face);

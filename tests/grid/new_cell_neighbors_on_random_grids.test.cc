@@ -159,8 +159,18 @@ struct CubeCounts {
   std::size_t cannot_be_filled_count;
 };
 
+// Checks that FindNewCellNeighbors gives the reference's two facts at every box the fill of a cube asked about.
+void CheckFunctionMatchesReference(const GridTables& tables, const CubeFill& fill) {
+  for (const CellId new_cell : fill.visited_boxes) {
+    const NewCellNeighbors expected = ComputeNewCellNeighborsByAllCells(tables, new_cell);
+    const NewCellNeighbors actual = FindNewCellNeighbors(tables, new_cell);
+    EXPECT_EQ(actual.touches_much_smaller_cell, expected.touches_much_smaller_cell);
+    EXPECT_EQ(actual.touches_bigger_cell, expected.touches_bigger_cell);
+  }
+}
+
 // Fills every empty biggest cell beside the cells of one grid with the reference's facts: the new cells cover each
-// cube and none is told to split.
+// cube and none is told to split, and the function gives the reference's facts at every box the fill asked about.
 CubeCounts CheckEveryCubeOfGrid(const GridTables& tables, const std::vector<CellId>& cell_list) {
   CubeCounts counts = {.cube_count = 0, .cannot_be_filled_count = 0};
   const FindFacts find_reference_facts = [&tables](CellId new_cell) {
@@ -169,6 +179,7 @@ CubeCounts CheckEveryCubeOfGrid(const GridTables& tables, const std::vector<Cell
   for (const CellId cube : FindCubesToFill(tables, cell_list)) {
     const CubeFill fill = BuildCubeFill(cube, find_reference_facts);
     CheckNewCellsCoverCube(fill, cube, tables.frame.size_level_count);
+    CheckFunctionMatchesReference(tables, fill);
     for (const FilledCell& filled : fill.new_cells) {
       EXPECT_FALSE(filled.facts.touches_much_smaller_cell);
     }
@@ -178,10 +189,10 @@ CubeCounts CheckEveryCubeOfGrid(const GridTables& tables, const std::vector<Cell
   return counts;
 }
 
-// The top-down fill of every empty biggest cell beside the cells of the first 16 random grids, asked of the reference.
-// It prints how many cubes cannot be filled. It checks these properties in one function because each TEST runs in a
-// process of its own and would build the grids again.
-TEST(NewCellNeighbors, RandomGrids_TopDownFillCoversEveryCube) {
+// The top-down fill of every empty biggest cell beside the cells of the first 16 random grids, asked of the reference
+// and of the function. It prints how many cubes cannot be filled. It checks these properties in one function because
+// each TEST runs in a process of its own and would build the grids again.
+TEST(NewCellNeighbors, RandomGrids_TopDownFillMatchesTheReference) {
   std::vector<std::size_t> entries(kGridCount);
   for (std::size_t entry = 0; entry < kGridCount; ++entry) {
     entries.at(entry) = entry;

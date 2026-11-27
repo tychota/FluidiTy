@@ -15,6 +15,7 @@
 //
 // Owns:    FindCellsAtOnGpu, ComputeNearbyFaceResultsOnGpu, ComputeFaceWeightResultsOnGpu, FindCellCornersOnGpu,
 //          FindFaceCornersOnGpu, ComputeCornerPositionsOnGpu, FindCellsAroundEdgesOnGpu, FindTouchingCellsOnGpu,
+//          FindNewCellNeighborsOnGpu,
 //          FindFacePiecesOnGpu, FindCellsNearFacesOnGpu, WalkFaceSearchesOnGpu, ComputeFormulasOnGpu,
 //          ComputeCellPlaceFactsOnGpu, ComputeFacePlaceFactsOnGpu,
 //          ComputeBorderBlockResultsOnGpu, ComputeReadMarksResultsOnGpu, ComputePieceStepResultsOnGpu,
@@ -86,6 +87,10 @@
 //   ComputeCellSizeFactorCode, ComputeCellSizeFactorTable, ComputeNewCellSizeLevel,
 //   ComputeRefinementBoxReachesOutside, ComputeRefinementEntryIndex, ComputeRefinementLayerExtent,
 //   ComputeWantedCellWidth, ComputeWantedSizeLevel, FindNearestCommittedCell
+//
+// Reached by FindNewCellNeighborsOf, through FindNewCellNeighbors (new_cell_neighbors.gpu.test.cc):
+//   ComputeIsPartTouchingBox, ComputeTouchesBiggerCell, ComputeTouchesMuchSmallerCell, FindSizeLevelAtPoint,
+//   ToPartHalves, ToPlaceDirection
 //
 // Reached by ComputeIsBorderBlock, which ComputeBorderBlockResult asks (border_blocks.gpu.test.cc):
 //   ComputeSmallerBlockPosition, ComputeIsPositionWithin, ComputeIsBlockSetAroundOneBlock,
@@ -174,6 +179,10 @@ FindCellsAroundEdgesOnGpu(const GridTables& tables, const EdgeQuery* queries, in
 // Runs FindTouchingCellsOf over the queries.
 RunOnCallStatus
 FindTouchingCellsOnGpu(const GridTables& tables, const CellPlaceIndex* queries, int count, TouchingCells* results);
+
+// Runs FindNewCellNeighborsOf over the queries.
+RunOnCallStatus
+FindNewCellNeighborsOnGpu(const GridTables& tables, const CellId* queries, int count, NewCellNeighbors* results);
 
 // Runs FindFacePiecesOf over the queries.
 RunOnCallStatus

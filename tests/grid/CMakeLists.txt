@@ -512,6 +512,19 @@ fluidity_add_test(
 )
 
 fluidity_add_test(
+  new_cell_neighbors_on_gpu_functional_test
+  SOURCES
+  new_cell_neighbors.gpu.test.cc
+  LABEL
+  gpu
+  TIER
+  functional
+  LINKS
+  fluidity_base_testing
+  fluidity_grid_testing
+)
+
+fluidity_add_test(
   new_cell_neighbors_on_random_grids_functional_test
   SOURCES
   new_cell_neighbors_on_random_grids.test.cc

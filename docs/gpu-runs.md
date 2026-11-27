@@ -235,6 +235,7 @@ script's window stops the script and loses the block.
 | `grid_cell_checks_on_gpu_functional_test` | 9 | unknown | `grid_cell_checks_on_random_grids_functional_test`, 5 s |
 | `cell_size_rule_on_gpu_functional_test` | 2 | unknown | `cell_size_factor_on_many_inputs_functional_test`, under 0.1 s |
 | `find_cell_at_on_gpu_functional_test` | 2 | unknown | `find_cell_at_near_form_on_positions_functional_test`, 3 s |
+| `new_cell_neighbors_on_gpu_functional_test` | 1 | unknown | `new_cell_neighbors_on_random_grids_functional_test`, under 1 s |
 | `nearby_face_weights_on_gpu_functional_test` | 4 | unknown | `nearby_face_weights_on_random_grids_functional_test`, 5 s |
 | `cell_surroundings_on_gpu_functional_test` | 7 | unknown | touching cells 5 s, corners 4 s, face search 3 s |
 | `shared_grid_functions_on_gpu_functional_test` | 4 | unknown | none |
