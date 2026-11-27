@@ -16,9 +16,9 @@
 // sets them for the set or for the border so far: the blocks of the set are marked through their own cell places. The
 // scan of the marks (WriteListedMarks) is a later launch of the same stream, so it starts after the marking launch has
 // finished.
-// Chunks: step 3 is one launch for each chunk of kSetBlocksPerMarkingLaunch blocks of the set (the CPU half calls
-// WriteBorderReadMarksOnGpu once for each chunk), each followed by a wait, so no launch runs long enough for the
-// display watchdog and a failed chunk stops the ones after it.
+// Shards: step 3 is one launch for each shard of kSetBlocksPerMarkingLaunch blocks of the set (the CPU half calls
+// WriteBorderReadMarksOnGpu once for each shard), each followed by a wait, so no launch runs long enough for the
+// display watchdog and a failed shard stops the ones after it.
 // Stack: the thread of WriteBorderReadMarks keeps the results of the readers as locals (see the header), 3,600 bytes of
 // stack on sm_120 (kBorderSearchStackBytes); the other functions keep no array. The launch bound of one thread block
 // of kThreadBlockSize threads for each multiprocessor makes the compiler fit that thread block into the registers of a
@@ -91,14 +91,14 @@ __global__ void __launch_bounds__(kThreadBlockSize) CheckBorderSoFar(
   }
 }
 
-// Step 3: one item per place of the chunk of the set. After a failure of step 2 no thread marks anything. The marking
+// Step 3: one item per place of the shard of the set. After a failure of step 2 no thread marks anything. The marking
 // functions are long: see the Stack sentence of the file header.
 __global__ void __launch_bounds__(kThreadBlockSize, 1) WriteBorderReadMarks(
     GridTables tables,
     CellBlockRange range,
     const CellBlockIndex* border_so_far,
     std::uint32_t border_so_far_count,
-    SetPlaceChunk chunk,
+    SetPlaceShard shard,
     BorderWidth width,
     const GridBuildStatus* status,
     std::uint8_t* marks
@@ -107,13 +107,13 @@ __global__ void __launch_bounds__(kThreadBlockSize, 1) WriteBorderReadMarks(
     return;
   }
   const GridStride stride = ComputeGridStride();
-  for (std::size_t item = stride.first_item; item < chunk.set_place_count; item += stride.item_step) {
+  for (std::size_t item = stride.first_item; item < shard.set_place_count; item += stride.item_step) {
     ApplySetPlaceReadMarks(
         tables,
         range,
         border_so_far,
         border_so_far_count,
-        chunk.first_set_place + static_cast<std::uint32_t>(item),
+        shard.first_set_place + static_cast<std::uint32_t>(item),
         width,
         marks
     );
@@ -222,22 +222,22 @@ RunOnCallStatus WriteBorderReadMarksOnGpu(
     CellBlockRange range,
     const CellBlockIndex* border_so_far,
     std::uint32_t border_so_far_count,
-    SetPlaceChunk chunk,
+    SetPlaceShard shard,
     BorderWidth width,
     const GridBuildStatus* status,
     std::uint8_t* marks
 ) {
-  if (chunk.set_place_count == 0) {
+  if (shard.set_place_count == 0) {
     return RunOnCallStatus::kDone;
   }
   if (const RunOnCallStatus started = ApplyGpuFunctionAndWaitOnFailure(
           WriteBorderReadMarks,
-          ComputeLaunchSize(chunk.set_place_count),
+          ComputeLaunchSize(shard.set_place_count),
           tables,
           range,
           border_so_far,
           border_so_far_count,
-          chunk,
+          shard,
           width,
           status,
           marks
@@ -245,8 +245,8 @@ RunOnCallStatus WriteBorderReadMarksOnGpu(
       started != RunOnCallStatus::kDone) {
     return started;
   }
-  // The wait ends this chunk before the next one starts, so a chunk that fails is reported here and no later chunk
-  // runs, and the display watchdog sees each chunk as a launch of its own.
+  // The wait ends this shard before the next one starts, so a shard that fails is reported here and no later shard
+  // runs, and the display watchdog sees each shard as a launch of its own.
   return CheckGpuWork();
 }
 

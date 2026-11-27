@@ -34,8 +34,8 @@
 //   border width  how far the readers of a stage read: kTouchingCells or kFourCellWidths
 // Owns:    BorderWidth, BlockSet, ComputeIsInBlockSet, ComputeIsBorderBlock, ApplyCellPlaceReadMarks,
 //          ApplyFacePlaceReadMarks, kPlacesPerSetBlock, ComputeBorderSoFarFailureKey, ApplySetPlaceReadMarks,
-//          ComputeListedMark, ApplyBorderBlockWriteAt, kMaxSetBlocks, kSetBlocksPerMarkingLaunch, SetPlaceChunk,
-//          ComputeIsSetWithinPlaceLimit, ComputeMarkingChunkCount, ComputeMarkingChunk; and, for this header's own
+//          ComputeListedMark, ApplyBorderBlockWriteAt, kMaxSetBlocks, kSetBlocksPerMarkingLaunch, SetPlaceShard,
+//          ComputeIsSetWithinPlaceLimit, ComputeMarkingShardCount, ComputeMarkingShard; and, for this header's own
 //          functions only,
 //          ComputeSmallerBlockPosition, ComputeIsPositionWithin, ComputeIsBlockSetAroundOneBlock,
 //          ComputeIsBlockSetUnderNear, ComputeIsBlockSetUnderWide, ComputeIsBlockSetAround,
@@ -917,12 +917,12 @@ static_assert(
 // block should cost that card about 70 to 270 microseconds (up to 10^5 dependent table reads for each of its active
 // cell places); so 2,048 blocks should take about 0.15 to 0.55 s, far below the 2 s after which the display watchdog
 // of Windows ends a GPU function, and 622,592 threads are still many passes of the resident ones. A longer set runs
-// in several launches. The marks do not depend on the order of the places, so the chunks change no result.
+// in several launches. The marks do not depend on the order of the places, so the shards change no result.
 inline constexpr std::uint32_t kSetBlocksPerMarkingLaunch = 2048;
 
-// The places of one chunk of a set: the places first_set_place to first_set_place + set_place_count - 1, in the numbers
+// The places of one shard of a set: the places first_set_place to first_set_place + set_place_count - 1, in the numbers
 // ApplySetPlaceReadMarks takes.
-struct SetPlaceChunk {
+struct SetPlaceShard {
   std::uint32_t first_set_place = 0;
   std::uint32_t set_place_count = 0;
 };
@@ -937,35 +937,35 @@ ComputeIsSetWithinPlaceLimit(std::uint64_t range_block_count, std::uint64_t bord
   return range_block_count + border_so_far_count <= kMaxSetBlocks;
 }
 
-// Computes how many chunks of set_blocks_per_chunk blocks cover a set of set_block_count blocks: the last chunk may be
-// shorter. A set of no block has no chunk.
-// Example: 5 blocks in chunks of 2 give 3.
-// Requires: set_blocks_per_chunk is at least 1; set_block_count is at most kMaxSetBlocks.
+// Computes how many shards of set_blocks_per_shard blocks cover a set of set_block_count blocks: the last shard may be
+// shorter. A set of no block has no shard.
+// Example: 5 blocks in shards of 2 give 3.
+// Requires: set_blocks_per_shard is at least 1; set_block_count is at most kMaxSetBlocks.
 FLUIDITY_CPU_AND_GPU constexpr std::uint32_t
-ComputeMarkingChunkCount(std::uint32_t set_block_count, std::uint32_t set_blocks_per_chunk) noexcept {
-  return (set_block_count / set_blocks_per_chunk) + (set_block_count % set_blocks_per_chunk == 0 ? 0U : 1U);
+ComputeMarkingShardCount(std::uint32_t set_block_count, std::uint32_t set_blocks_per_shard) noexcept {
+  return (set_block_count / set_blocks_per_shard) + (set_block_count % set_blocks_per_shard == 0 ? 0U : 1U);
 }
 
-// Computes the places of chunk `chunk_index`: its blocks are set_blocks_per_chunk blocks of the set from block
-// chunk_index x set_blocks_per_chunk, or fewer at the end of the set, and their places are kPlacesPerSetBlock each.
-// Together the chunks below ComputeMarkingChunkCount hold every place of the set once, in order. A chunk index at or
+// Computes the places of shard `shard_index`: its blocks are set_blocks_per_shard blocks of the set from block
+// shard_index x set_blocks_per_shard, or fewer at the end of the set, and their places are kPlacesPerSetBlock each.
+// Together the shards below ComputeMarkingShardCount hold every place of the set once, in order. A shard index at or
 // above the count gives no place.
-// Example: 5 blocks in chunks of 2: chunk 2 is block 4 alone, places 1,216 to 1,519.
-// Requires: set_blocks_per_chunk is at least 1; set_block_count is at most kMaxSetBlocks.
-FLUIDITY_CPU_AND_GPU constexpr SetPlaceChunk ComputeMarkingChunk(
+// Example: 5 blocks in shards of 2: shard 2 is block 4 alone, places 1,216 to 1,519.
+// Requires: set_blocks_per_shard is at least 1; set_block_count is at most kMaxSetBlocks.
+FLUIDITY_CPU_AND_GPU constexpr SetPlaceShard ComputeMarkingShard(
     std::uint32_t set_block_count,
-    std::uint32_t chunk_index,
-    std::uint32_t set_blocks_per_chunk
+    std::uint32_t shard_index,
+    std::uint32_t set_blocks_per_shard
 ) noexcept {
-  const std::uint64_t first_block = std::uint64_t{chunk_index} * set_blocks_per_chunk;
+  const std::uint64_t first_block = std::uint64_t{shard_index} * set_blocks_per_shard;
   if (first_block >= set_block_count) {
     return {.first_set_place = 0, .set_place_count = 0};
   }
   const std::uint64_t blocks_left = set_block_count - first_block;
-  const std::uint64_t chunk_blocks = blocks_left < set_blocks_per_chunk ? blocks_left : set_blocks_per_chunk;
+  const std::uint64_t shard_blocks = blocks_left < set_blocks_per_shard ? blocks_left : set_blocks_per_shard;
   return {
       .first_set_place = static_cast<std::uint32_t>(first_block * kPlacesPerSetBlock),
-      .set_place_count = static_cast<std::uint32_t>(chunk_blocks * kPlacesPerSetBlock),
+      .set_place_count = static_cast<std::uint32_t>(shard_blocks * kPlacesPerSetBlock),
   };
 }
 
@@ -1010,7 +1010,7 @@ FLUIDITY_CPU_AND_GPU constexpr std::uint64_t ComputeBorderSoFarFailureKey(
 // Ties: as the two marking functions: only the value 1 is written and no mark is read, so threads that run this for
 //   different places at once, into the same marks, cannot conflict, and the marks do not depend on their order. The
 //   marks must hold 0 before the first place and nothing may mark the blocks of the set beforehand. The places run in
-//   chunks (ComputeMarkingChunk), which changes nothing for the same reason.
+//   shards (ComputeMarkingShard), which changes nothing for the same reason.
 // Example: range {4, 2}, border_so_far {9}: set_place 0 is cell place 0 of block 4, set_place 304 is cell place 0 of
 //   block 5, set_place 608 is cell place 0 of block 9, and set_place 64 is face place 0 of block 4.
 // Requires: the set holds at most kMaxSetBlocks blocks (ComputeIsSetWithinPlaceLimit), so set_place does not wrap;

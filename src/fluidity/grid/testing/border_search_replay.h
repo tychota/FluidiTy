@@ -17,7 +17,7 @@
 // Uses:    CPU-only guard (base/cpu_only.h), ReplayLaunch, ApplyEveryThreadOfLaunch, ApplyEveryThreadOfSizedLaunch
 //          (grid/testing/thread_replay.h), BorderWidth, ComputeBorderSoFarFailureKey,
 //          ApplySetPlaceReadMarks, ComputeListedMark, ApplyBorderBlockWriteAt, kSetBlocksPerMarkingLaunch,
-//          ComputeMarkingChunkCount, ComputeMarkingChunk, SetPlaceChunk
+//          ComputeMarkingShardCount, ComputeMarkingShard, SetPlaceShard
 //          (grid/border_block_steps.h), ComputeResetBuildStatus (grid/grid_build_steps.h), Buffer (base/buffer.h),
 //          RunOn (base/run_on.h), OrderBuffers (base/stable_order.h), GridBuildStatus (grid/grid_build_status.h),
 //          CellBlockIndex, kNoIndex (grid/grid_ids.h), GridTables (grid/grid_tables.h)
@@ -62,7 +62,7 @@ struct BorderReplayInputs {
   std::span<const CellBlockIndex> border_so_far;
   BorderWidth width = BorderWidth::kTouchingCells;
   std::uint32_t border_block_room = 0;  // Entries the list may hold.
-  // Blocks of the set that one replayed marking launch runs places for: the chunks of ComputeMarkingChunk. The GPU's
+  // Blocks of the set that one replayed marking launch runs places for: the shards of ComputeMarkingShard. The GPU's
   // own is kSetBlocksPerMarkingLaunch; a small one makes a small set take several launches, as a large set does.
   std::uint32_t set_blocks_per_marking_launch = kSetBlocksPerMarkingLaunch;
 };
@@ -121,13 +121,13 @@ inline BorderReplayResult ComputeBorderSearchReplay(
     status.failure_key = std::min(status.failure_key, failure_key);
     return true;
   });
-  // Step 3: one launch for each chunk of the set, one thread for each place of the chunk; after a failure of step 2 a
+  // Step 3: one launch for each shard of the set, one thread for each place of the shard; after a failure of step 2 a
   // thread stops at once.
   const std::uint32_t set_block_count = inputs.range.block_count + border_so_far_count;
-  const std::uint32_t chunk_count = ComputeMarkingChunkCount(set_block_count, inputs.set_blocks_per_marking_launch);
-  for (std::uint32_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
-    const SetPlaceChunk chunk = ComputeMarkingChunk(set_block_count, chunk_index, inputs.set_blocks_per_marking_launch);
-    ApplyEveryThreadOfLaunch(chunk.set_place_count, launch, [&](std::size_t item) {
+  const std::uint32_t shard_count = ComputeMarkingShardCount(set_block_count, inputs.set_blocks_per_marking_launch);
+  for (std::uint32_t shard_index = 0; shard_index < shard_count; ++shard_index) {
+    const SetPlaceShard shard = ComputeMarkingShard(set_block_count, shard_index, inputs.set_blocks_per_marking_launch);
+    ApplyEveryThreadOfLaunch(shard.set_place_count, launch, [&](std::size_t item) {
       if (status.failure_key != kNoFailureKey) {
         return false;
       }
@@ -136,7 +136,7 @@ inline BorderReplayResult ComputeBorderSearchReplay(
           inputs.range,
           inputs.border_so_far.data(),
           border_so_far_count,
-          chunk.first_set_place + static_cast<std::uint32_t>(item),
+          shard.first_set_place + static_cast<std::uint32_t>(item),
           inputs.width,
           marks.data()
       );

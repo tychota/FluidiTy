@@ -369,30 +369,30 @@ TEST(ComputeIsSetWithinPlaceLimit, CountsThatWouldWrapIn32Bits_DoNotFit) {
   EXPECT_FALSE(ComputeIsSetWithinPlaceLimit(largest_count, 2));
 }
 
-TEST(ComputeMarkingChunk, ChunksOfTwoOverFiveBlocks_HoldEveryPlaceOnceInOrder) {
+TEST(ComputeMarkingShard, ShardsOfTwoOverFiveBlocks_HoldEveryPlaceOnceInOrder) {
   constexpr std::uint32_t kBlocks = 5;
-  constexpr std::uint32_t kBlocksPerChunk = 2;
-  ASSERT_EQ(ComputeMarkingChunkCount(kBlocks, kBlocksPerChunk), 3U);
+  constexpr std::uint32_t kBlocksPerShard = 2;
+  ASSERT_EQ(ComputeMarkingShardCount(kBlocks, kBlocksPerShard), 3U);
   std::uint32_t next_place = 0;
-  for (std::uint32_t chunk_index = 0; chunk_index < 3; ++chunk_index) {
-    const SetPlaceChunk chunk = ComputeMarkingChunk(kBlocks, chunk_index, kBlocksPerChunk);
-    EXPECT_EQ(chunk.first_set_place, next_place);
-    EXPECT_EQ(chunk.set_place_count, (chunk_index == 2 ? 1U : 2U) * kPlacesPerSetBlock);
-    next_place += chunk.set_place_count;
+  for (std::uint32_t shard_index = 0; shard_index < 3; ++shard_index) {
+    const SetPlaceShard shard = ComputeMarkingShard(kBlocks, shard_index, kBlocksPerShard);
+    EXPECT_EQ(shard.first_set_place, next_place);
+    EXPECT_EQ(shard.set_place_count, (shard_index == 2 ? 1U : 2U) * kPlacesPerSetBlock);
+    next_place += shard.set_place_count;
   }
   EXPECT_EQ(next_place, kBlocks * kPlacesPerSetBlock);
-  const SetPlaceChunk beyond = ComputeMarkingChunk(kBlocks, 3, kBlocksPerChunk);
+  const SetPlaceShard beyond = ComputeMarkingShard(kBlocks, 3, kBlocksPerShard);
   EXPECT_EQ(beyond.set_place_count, 0U);
 }
 
-TEST(ComputeMarkingChunk, SetsAroundTheChunkSize_NeedTheRightCount) {
-  EXPECT_EQ(ComputeMarkingChunkCount(0, kSetBlocksPerMarkingLaunch), 0U);
-  EXPECT_EQ(ComputeMarkingChunkCount(1, kSetBlocksPerMarkingLaunch), 1U);
-  EXPECT_EQ(ComputeMarkingChunkCount(kSetBlocksPerMarkingLaunch, kSetBlocksPerMarkingLaunch), 1U);
-  EXPECT_EQ(ComputeMarkingChunkCount(kSetBlocksPerMarkingLaunch + 1, kSetBlocksPerMarkingLaunch), 2U);
-  // The largest set: its last chunk ends at its last place, which is a 32-bit number.
-  const std::uint32_t chunk_count = ComputeMarkingChunkCount(kMaxSetBlocks, kSetBlocksPerMarkingLaunch);
-  const SetPlaceChunk last = ComputeMarkingChunk(kMaxSetBlocks, chunk_count - 1, kSetBlocksPerMarkingLaunch);
+TEST(ComputeMarkingShard, SetsAroundTheShardSize_NeedTheRightCount) {
+  EXPECT_EQ(ComputeMarkingShardCount(0, kSetBlocksPerMarkingLaunch), 0U);
+  EXPECT_EQ(ComputeMarkingShardCount(1, kSetBlocksPerMarkingLaunch), 1U);
+  EXPECT_EQ(ComputeMarkingShardCount(kSetBlocksPerMarkingLaunch, kSetBlocksPerMarkingLaunch), 1U);
+  EXPECT_EQ(ComputeMarkingShardCount(kSetBlocksPerMarkingLaunch + 1, kSetBlocksPerMarkingLaunch), 2U);
+  // The largest set: its last shard ends at its last place, which is a 32-bit number.
+  const std::uint32_t shard_count = ComputeMarkingShardCount(kMaxSetBlocks, kSetBlocksPerMarkingLaunch);
+  const SetPlaceShard last = ComputeMarkingShard(kMaxSetBlocks, shard_count - 1, kSetBlocksPerMarkingLaunch);
   EXPECT_EQ(
       std::uint64_t{last.first_set_place} + last.set_place_count,
       std::uint64_t{kMaxSetBlocks} * kPlacesPerSetBlock
@@ -409,7 +409,7 @@ std::vector<std::uint32_t> ToWrittenList(const BorderReplayResult& replay) {
 }
 
 // The set of the plane-four grid, block 0 as the range and block 2 as the border so far, replayed with one block for
-// each marking launch (two launches), then with the GPU's own chunk: the same list and count, in both widths and in
+// each marking launch (two launches), then with the GPU's own shard: the same list and count, in both widths and in
 // both thread orders.
 void CheckOneBlockLaunchesEqualOneLaunch(const GridTables& tables, BorderWidth width, ReplayLaunch launch) {
   const std::array<CellBlockIndex, 1> border_so_far = {CellBlockIndex{2}};
@@ -428,7 +428,7 @@ void CheckOneBlockLaunchesEqualOneLaunch(const GridTables& tables, BorderWidth w
   EXPECT_EQ(ToWrittenList(two_launches), ToWrittenList(one_launch));
 }
 
-TEST(ComputeBorderSearchReplay, ChunksOfOneBlock_GiveTheListOfOneLaunch) {
+TEST(ComputeBorderSearchReplay, ShardsOfOneBlock_GiveTheListOfOneLaunch) {
   const std::expected<TestGrid, GridFailure> test_grid = BuildTestGrid(ToInputs(ToUnitFrame(1), BuildPlaneFourCells()));
   ASSERT_TRUE(test_grid.has_value());
   const GridTables tables = test_grid->grid.tables(RunOn::kCpu);

@@ -73,20 +73,20 @@ RunOnCallStatus CheckBorderSoFarOnGpu(
     GridBuildStatus* status
 );
 
-// Step 3, once for each chunk of the set (ComputeMarkingChunk): one thread for each place of the chunk, which is
-// `chunk.set_place_count` places from the set's place `chunk.first_set_place` (kPlacesPerSetBlock for each block of
+// Step 3, once for each shard of the set (ComputeMarkingShard): one thread for each place of the shard, which is
+// `shard.set_place_count` places from the set's place `shard.first_set_place` (kPlacesPerSetBlock for each block of
 // `range`, then of the border so far), returns at once when the failure key of *status is set, and otherwise runs
 // ApplySetPlaceReadMarks. The threads write only the byte value 1, with plain stores, never a read-modify-write and
 // never a read of a mark, so two threads that write one mark at once write the same value to a byte whose neighbours a
 // byte store leaves unchanged (formally a data race in the CUDA memory model, as ApplyCellPlaceReadMarks says); the
-// marks are those of any order of the places, so the chunks may run in any split. No thread tests a mark to stop early.
-// The function waits for its launch to end, so the chunk is complete when it returns, and step 4 starts after the last
-// chunk. A chunk with no place launches nothing.
-// If a chunk fails after earlier chunks marked, the function returns the failure, the caller starts no later chunk,
+// marks are those of any order of the places, so the shards may run in any split. No thread tests a mark to stop early.
+// The function waits for its launch to end, so the shard is complete when it returns, and step 4 starts after the last
+// shard. A shard with no place launches nothing.
+// If a shard fails after earlier shards marked, the function returns the failure, the caller starts no later shard,
 // and the output is not written: the marks hold a part of the result, but step 4 and step 6 never run, so no list or
 // count is written; the next call clears the marks in its step 1.
-// Requires: marks is GPU memory of tables.block_count bytes, all 0 at the first chunk; tables, border_so_far and status
-//   are GPU memory; the chunks are those of a set of at most kMaxSetBlocks blocks, so every place fits the 32-bit place
+// Requires: marks is GPU memory of tables.block_count bytes, all 0 at the first shard; tables, border_so_far and status
+//   are GPU memory; the shards are those of a set of at most kMaxSetBlocks blocks, so every place fits the 32-bit place
 //   index (the caller checks ComputeIsSetWithinPlaceLimit before step 1).
 // Fails: kCallFailed  a GPU function did not start, or the GPU work failed
 RunOnCallStatus WriteBorderReadMarksOnGpu(
@@ -94,7 +94,7 @@ RunOnCallStatus WriteBorderReadMarksOnGpu(
     CellBlockRange range,
     const CellBlockIndex* border_so_far,
     std::uint32_t border_so_far_count,
-    SetPlaceChunk chunk,
+    SetPlaceShard shard,
     BorderWidth width,
     const GridBuildStatus* status,
     std::uint8_t* marks

@@ -187,7 +187,7 @@ TEST(FindBorderBlocks, EveryThreadOnNestedBall_EqualsCpuStackedLayers) {
 }
 
 // A grid of 4,097 blocks, a range of 3,000 of them (more than the 2,048 blocks of one marking launch of the GPU) and a
-// second layer on top of it: the replay, which splits the marking at the GPU's own chunk size (and at 3 blocks), equals
+// second layer on top of it: the replay, which splits the marking at the GPU's own shard size (and at 3 blocks), equals
 // the CPU form's lists.
 TEST(FindBorderBlocks, EveryThreadOnMoreBlocksThanOneLaunch_EqualsCpuStackedLayers) {
   const std::vector<CellId> cells = BuildTouchingCellsInManyBlocks(kManyBlocksGridBlockCount);

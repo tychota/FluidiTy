@@ -196,19 +196,19 @@ std::expected<std::uint32_t, GridFailure> FindBorderBlocksOnGpu(const GpuBorderS
       call_status != RunOnCallStatus::kDone) {
     return std::unexpected(ToCallFailure(call_status));
   }
-  // Step 3: one launch for each chunk of the set, each waited for. The threads stop at once when step 2 failed. A chunk
-  // that fails ends the call here: the marks of the earlier chunks give no list, and the next call clears them.
+  // Step 3: one launch for each shard of the set, each waited for. The threads stop at once when step 2 failed. A shard
+  // that fails ends the call here: the marks of the earlier shards give no list, and the next call clears them.
   // The caller checked ComputeIsSetWithinPlaceLimit, so the sum fits 32 bits.
   const auto set_block_count =
       static_cast<std::uint32_t>(std::uint64_t{search.range.block_count} + search.border_so_far_count);
-  const std::uint32_t chunk_count = ComputeMarkingChunkCount(set_block_count, kSetBlocksPerMarkingLaunch);
-  for (std::uint32_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+  const std::uint32_t shard_count = ComputeMarkingShardCount(set_block_count, kSetBlocksPerMarkingLaunch);
+  for (std::uint32_t shard_index = 0; shard_index < shard_count; ++shard_index) {
     if (const RunOnCallStatus call_status = WriteBorderReadMarksOnGpu(
             search.tables,
             search.range,
             search.border_so_far,
             search.border_so_far_count,
-            ComputeMarkingChunk(set_block_count, chunk_index, kSetBlocksPerMarkingLaunch),
+            ComputeMarkingShard(set_block_count, shard_index, kSetBlocksPerMarkingLaunch),
             search.width,
             status,
             search.marks
