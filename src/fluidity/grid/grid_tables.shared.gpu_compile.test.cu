@@ -252,10 +252,6 @@ __global__ void ComputeWithEverySharedGridFunction(
   volume.layer_codes[0] = volume_codes;
   const int factor_code = ComputeCellSizeFactorCode(volume, settings.smallest_size_level, sorted_cells[0]);
   double_results[double_result_index++] = factor_table.factor[factor_code + kMaxCellSizeFactorCode];
-  // cell_size_rule.h: the nearest committed cell and the size level of a new cell, read through GridTables.
-  results[result_index++] = FindNearestCommittedCell(tables, world_position).value;
-  results[result_index++] =
-      static_cast<std::uint64_t>(ComputeNewCellSizeLevel(tables, world_position, settings.smallest_size_level));
   results[result_index++] = static_cast<std::uint64_t>(kMaxNearbyFaces);
 }
 

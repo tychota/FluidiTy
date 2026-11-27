@@ -1,5 +1,4 @@
-// The GPU runners of cell_size_rule.gpu.test.cc: the cell size rule over every case and the size level of a new cell
-// over every position, one thread per item.
+// The GPU runner of cell_size_rule.gpu.test.cc: the cell size rule over every case, one thread per case.
 // Read: docs/method-paper/fluidity-method.typ <sec-cell-size-rule>
 
 #include <cuda_runtime.h>
@@ -39,20 +38,6 @@ __global__ void WriteCellSizeFactorTable(CellSizeFactorTable* table) {
   const GridStride stride = ComputeGridStride();
   if (stride.first_item == 0) {
     *table = ComputeCellSizeFactorTable();
-  }
-}
-
-// results[i] = ComputeNewCellResult(committed, positions[i], smallest_size_level) for i below count.
-__global__ void ComputeEveryNewCellResult(
-    GridTables committed,
-    const Vec3* positions,
-    int count,
-    SizeLevel smallest_size_level,
-    NewCellResult* results
-) {
-  const GridStride stride = ComputeGridStride();
-  for (std::size_t index = stride.first_item; index < static_cast<std::size_t>(count); index += stride.item_step) {
-    results[index] = ComputeNewCellResult(committed, positions[index], smallest_size_level);
   }
 }
 
@@ -165,51 +150,6 @@ RunOnCallStatus ComputeCellSizeRuleOnGpu(
     }
   }
   return RunOnCallStatus::kDone;
-}
-
-RunOnCallStatus ComputeNewCellSizeLevelsOnGpu(
-    const GridTables& committed,
-    const Vec3* positions,
-    int count,
-    SizeLevel smallest_size_level,
-    NewCellResult* results
-) {
-  const auto position_count = static_cast<std::size_t>(count);
-  GpuArray<Vec3> gpu_positions;
-  GpuArray<NewCellResult> gpu_results;
-  if (const RunOnCallStatus status = gpu_positions.Build(position_count); status != RunOnCallStatus::kDone) {
-    return status;
-  }
-  if (const RunOnCallStatus status = gpu_results.Build(position_count); status != RunOnCallStatus::kDone) {
-    return status;
-  }
-  const std::size_t position_bytes = sizeof(Vec3) * position_count;
-  if (const cudaError_t error = cudaMemcpy(gpu_positions.values(), positions, position_bytes, cudaMemcpyHostToDevice);
-      error != cudaSuccess) {
-    return ToRunOnCallStatus(error);
-  }
-  if (const RunOnCallStatus status = ApplyGpuFunction(
-          ComputeEveryNewCellResult,
-          ComputeLaunchSize(position_count),
-          committed,
-          gpu_positions.values(),
-          count,
-          smallest_size_level,
-          gpu_results.values()
-      );
-      status != RunOnCallStatus::kDone) {
-    return status;
-  }
-  // The copy waits for the GPU function, so an error while it ran reports here.
-  const std::size_t result_bytes = sizeof(NewCellResult) * position_count;
-  if (const cudaError_t error = cudaMemcpy(results, gpu_results.values(), result_bytes, cudaMemcpyDeviceToHost);
-      error != cudaSuccess) {
-    return ToRunOnCallStatus(error);
-  }
-  if (const RunOnCallStatus status = gpu_positions.Free(); status != RunOnCallStatus::kDone) {
-    return status;
-  }
-  return gpu_results.Free();
 }
 
 }  // namespace fluidity::grid

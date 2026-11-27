@@ -1,24 +1,20 @@
-// The cell size rule evaluated for one case, and its GPU runners, for cell_size_rule.gpu.test.cc, private to grid/.
+// The cell size rule evaluated for one case, and its GPU runner, for cell_size_rule.gpu.test.cc, private to grid/.
 //
-// Purpose: run the cell size rule and the size level of a new cell on the GPU with fixed inputs, so the test can
-//   compare every result with the CPU's, byte for byte.
+// Purpose: run the cell size rule on the GPU with fixed inputs, so the test can compare every result with the CPU's,
+//   byte for byte.
 //
 // Idea: ComputeCellSizeRuleResult computes, for one case, the wanted cell width, its wanted size level and the
-//   cell size factor code of the case's cell; ComputeNewCellResult computes, for one position, the nearest committed
-//   cell and the size level of a new cell there. Both are marked FLUIDITY_CPU_AND_GPU, so the GPU functions and the
-//   CPU loop of the test call the same code. The results hold no padding, so equal results are equal bytes. The
-//   runners copy the inputs to the GPU, run one thread per input, and copy the results back.
-//   ComputeCellSizeRuleOnGpu also computes the table of cell size factors on the GPU and copies the refinement
-//   volume's layers there.
+//   cell size factor code of the case's cell. It is marked FLUIDITY_CPU_AND_GPU, so the GPU function and the CPU loop
+//   of the test call the same code. The results hold no padding, so equal results are equal bytes. The runner copies
+//   the inputs to the GPU, runs one thread per input, and copies the results back. It also computes the table of cell
+//   size factors on the GPU and copies the refinement volume's layers there.
 //
-// Owns:    CellSizeRuleCase, CellSizeRuleResult, NewCellResult, ComputeCellSizeRuleResult, ComputeNewCellResult,
-//          ComputeCellSizeRuleOnGpu, ComputeNewCellSizeLevelsOnGpu
-// Uses:    FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), RunOnCallStatus (base/run_on_call.h), Vec3 (base/vec3.h),
+// Owns:    CellSizeRuleCase, CellSizeRuleResult, ComputeCellSizeRuleResult, ComputeCellSizeRuleOnGpu
+// Uses:    FLUIDITY_CPU_AND_GPU (base/cpu_and_gpu.h), RunOnCallStatus (base/run_on_call.h),
 //          CellSizeFacts, CellSizeSettings, CellWidthsBySizeLevel, CellSizeFactorTable, RefinementFactors,
-//          ComputeWantedCellWidth, ComputeWantedSizeLevel, ComputeCellSizeFactorCode, FindNearestCommittedCell,
-//          ComputeNewCellSizeLevel (grid/cell_size_rule.h), CellId, SizeLevel (grid/grid_ids.h),
-//          GridTables (grid/grid_tables.h)
-// Used by: cell_size_rule.gpu.test.cc, and testing/cell_size_rule_runner_gpu.cu, which defines the two runners
+//          ComputeWantedCellWidth, ComputeWantedSizeLevel, ComputeCellSizeFactorCode (grid/cell_size_rule.h), CellId,
+//          SizeLevel (grid/grid_ids.h)
+// Used by: cell_size_rule.gpu.test.cc, and testing/cell_size_rule_runner_gpu.cu, which defines the runner
 // Read:    docs/method-paper/fluidity-method.typ <sec-cell-size-rule>
 
 #pragma once
@@ -27,10 +23,8 @@
 
 #include "fluidity/base/cpu_and_gpu.h"
 #include "fluidity/base/run_on_call.h"
-#include "fluidity/base/vec3.h"
 #include "fluidity/grid/cell_size_rule.h"
 #include "fluidity/grid/grid_ids.h"
-#include "fluidity/grid/grid_tables.h"
 
 namespace fluidity::grid {
 
@@ -48,13 +42,6 @@ struct CellSizeRuleResult {
   std::int32_t factor_code = 0;  // ComputeCellSizeFactorCode of the case's cell.
 };
 static_assert(sizeof(CellSizeRuleResult) == 16, "a double and two 32-bit integers, with no padding");
-
-// The results of one position. 8 bytes and no padding.
-struct NewCellResult {
-  std::uint32_t nearest_place = 0;  // FindNearestCommittedCell, kNoIndex when none.
-  std::uint32_t size_level = 0;  // ComputeNewCellSizeLevel.
-};
-static_assert(sizeof(NewCellResult) == 8, "two 32-bit integers, with no padding");
 
 // Computes the results of one case with the given widths, settings and refinement volume. The factor code is read
 // with settings.smallest_size_level.
@@ -74,15 +61,6 @@ FLUIDITY_CPU_AND_GPU inline CellSizeRuleResult ComputeCellSizeRuleResult(
   };
 }
 
-// Computes the results of one position in a committed grid, on the processor of its tables.
-FLUIDITY_CPU_AND_GPU inline NewCellResult
-ComputeNewCellResult(const GridTables& committed, Vec3 position, SizeLevel smallest_size_level) {
-  return {
-      .nearest_place = FindNearestCommittedCell(committed, position).value,
-      .size_level = static_cast<std::uint32_t>(ComputeNewCellSizeLevel(committed, position, smallest_size_level)),
-  };
-}
-
 // Computes ComputeCellSizeRuleResult(cases[i], widths, settings, volume) on the GPU for i below `count`, into the CPU
 // array `results`, and ComputeCellSizeFactorTable() on the GPU into the CPU value `table`. `volume` is a refinement
 // volume in CPU memory: its layers below layer_count are copied to the GPU first, with the entry counts its counts say.
@@ -99,20 +77,6 @@ RunOnCallStatus ComputeCellSizeRuleOnGpu(
     const RefinementFactors& volume,
     CellSizeRuleResult* results,
     CellSizeFactorTable* table
-);
-
-// Computes ComputeNewCellResult(committed, positions[i], smallest_size_level) on the GPU for i below `count`, into the
-// CPU array `results`. `committed` holds the GPU tables of a built grid (StaggeredGrid::tables(RunOn::kGpu)); the
-// positions are in CPU memory and are copied to the GPU first. Writes `results` as ComputeCellSizeRuleOnGpu does.
-// Requires: count is 1 or more.
-// Fails: kOutOfMemory  the GPU had no memory for the positions or the results
-//        kCallFailed   another GPU call failed
-RunOnCallStatus ComputeNewCellSizeLevelsOnGpu(
-    const GridTables& committed,
-    const Vec3* positions,
-    int count,
-    SizeLevel smallest_size_level,
-    NewCellResult* results
 );
 
 }  // namespace fluidity::grid

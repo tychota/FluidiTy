@@ -2999,32 +2999,39 @@ multiply-add can arise. The CPU and the GPU therefore give the same bytes. The r
 cell, so any cut of the grid into batches gives each cell the same size level too. For example, in the frame above,
 $w = 0.125$ m gives size level 3, the double just below it gives 4, and 0.2 m gives 3.
 
-*New cells.* When liquid enters space with no cell, the step adds a cell there. The new cell borders air, so its depth
-is 0 and the rule wants $w_"floor"$. It starts instead one size level smaller than its nearest committed cell, and later
-resizes bring it down to its wanted width.
+*New cells.* When liquid enters space with no cell, the step adds cells there. A new cell borders air, so its depth is
+0 and the rule wants $w_"floor"$; later resizes bring it down to its wanted width. The new cells are chosen so that
+they obey the size-step rule (@sec-cell-sizes) against the committed grid, and they are the biggest cells that do.
 
-The nearest committed cell of a position $bold(x)$ is the nearest among the active cells of the committed grid that hold
-one of 27 searched positions, $bold(x) + (i, j, k) h_0$ with each of $i$, $j$, $k$ in ${-1, 0, 1}$, each found as any
-position finds its cell (@sec-cell-sizes). The cell whose centre is nearest $bold(x)$, by squared distance, wins; at an
-equal distance the cell that comes first in the fixed order wins, so the answer does not depend on the order of the
-search. The new cell's size level is that cell's size level plus one, but never smaller than the smallest size level the
-settings allow; when no searched position lies in an active cell, it is that smallest size level. A smallest size level
-beyond the frame reads as the frame's last. For example, with $h_0 = 1$ m, 3 size levels and the size-level-0 cell at
-(0, 0, 0) beside the 8 size-level-1 cells of the size-level-0 cell at (1, 0, 0), from (−0.5, 0.5, 0.5) m the searched
-position (0.5, 0.5, 0.5) m finds the big cell, so the new cell gets size level 1. From (2.25, 0.25, 0.25) m the searched
-position (1.25, 0.25, 0.25) m finds the small cell at (2, 0, 0), whose centre is 1 m away, so the new cell gets size
-level 2; the small cell at (3, 0, 0), whose centre is only 0.5 m away, holds no searched position.
+Empty space always comes in whole biggest cells: a place holds no cell only at size level 0. The step fills each empty
+biggest cell from the top. It starts with the biggest cell and asks the committed grid two questions about that box:
+does a committed cell two or more size levels smaller touch it, and does a committed cell one or more size levels
+bigger touch it. When the first answer is yes, the box is split into its 8 small cells and the same two questions are
+asked of each of them. When it is no, the box becomes a new cell as it is. A new cell beside a committed cell exactly
+one size level bigger obeys the size-step rule, so a bigger neighbour matters only when the box has to be split.
 
-The cell found may therefore not touch the new cell, and a nearer, smaller cell that no searched position finds can lie
-between them. When such a cell is two or more size levels smaller than the new cell, the new cell breaks the size-step
-rule (@sec-cell-sizes). So does the cap when cells already there are smaller than the settings' smallest size level. The
-step that adds cells therefore closes the size-step rule over its new list of cells, as the start grid below does, and
-the check of a cell list turns down a list that breaks it.
+The two answers are read with at most 82 look-ups of the committed grid, with integers only. For the bigger cell, each
+of the 26 places around the box, of the box's own size level, is looked up at one position inside it: a touching cell
+that is bigger than the box covers the whole place, so one position tells. For the much smaller cell, each of the 26
+places is cut into its 8 half-width parts, and the 56 parts that touch the box (4 of a face place, 2 of an edge place,
+1 of a corner place) are looked up at one position each. A cell found there that is two or more size levels smaller
+than the box shows that the part is split, and then its cells cover the part, so one of them touches the box. This
+needs no look-up when two size levels below the box lie past the last size level of the frame. A place or part outside
+the range of the cell ids counts as empty. The box must lie in space with no cell.
 
-Distances are measured in biggest cell widths from the frame's origin, so in any frame the frame check accepts no
-distance overflows, and an underflow never changes which cell is nearer. Every offset $i h_0$ is exact, and each
-distance uses only halvings, a quotient, subtractions, products and sums in a fixed order, with no fused multiply-add on
-either processor, so the CPU and the GPU choose the same cell.
+For example, with $h_0 = 1$ m and 4 size levels, let the size-level-0 cell at (1, -1, 0) be committed, and the
+size-level-0 cell at (0, 0, 0) be split into its 8 size-level-1 cells, the one at (1, 1, 0) split into 8 size-level-2
+cells, and the one of those at (3, 3, 0) split into 8 size-level-3 cells, all other cells active. The empty biggest cell
+at (1, 0, 0), from 1 to 2 m in $x$ and 0 to 1 m in $y$ and $z$, has the part of its neighbour at (0, 0, 0) with $x$ from
+0.5 to 1 m, $y$ from 0.5 to 1 m and $z$ from 0 to 0.5 m. Its lowest corner lies in a size-level-2 cell, and
+$2 >= 0 + 2$, so the biggest cell must be split. No committed cell is bigger than size level 0, so it has no bigger
+neighbour. Of its 8 small cells, the one at (2, 0, 0) touches the size-level-0 cell at (1, -1, 0), one size level
+bigger, and no cell of size level 3 reaches below $y = 0.75$ m, so it is not split and becomes a new cell as it is.
+
+A cube cannot be filled exactly when some box that has to be split also touches a committed cell one or more size
+levels bigger. Its 8 small cells, one size level smaller, would sit beside a committed cell two or more size levels
+bigger, and leaving it whole would break the size-step rule on the other side, against the much smaller cell. In every
+other case the fill succeeds. The step reports a cube that cannot be filled.
 
 *The start grid.* The grid of the first step comes from the same rule, read from the scene's start shapes instead of
 from particles. A cell's depth and distance are taken at its centre minus half its diagonal, a bound that no point of

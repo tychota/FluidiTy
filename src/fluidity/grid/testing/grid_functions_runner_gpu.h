@@ -82,11 +82,9 @@
 //   ComputeSplitCellCountToAdd, ComputeStoredCellState, FindBlockNeighbours, FindSortedBlockAt, FindSortedCell,
 //   FindSortedCellAt, ToBlockSortKey, ToCellSortKey, ToFailureDetail, ToFailureKey, ToFailurePosition, ToFailureStep
 //
-// Reached by the cell size rule runner, ComputeCellSizeRuleOnGpu and ComputeNewCellSizeLevelsOnGpu
-//   (cell_size_rule.gpu.test.cc):
-//   ComputeCellSizeFactorCode, ComputeCellSizeFactorTable, ComputeNewCellSizeLevel,
-//   ComputeRefinementBoxReachesOutside, ComputeRefinementEntryIndex, ComputeRefinementLayerExtent,
-//   ComputeWantedCellWidth, ComputeWantedSizeLevel, FindNearestCommittedCell
+// Reached by the cell size rule runner, ComputeCellSizeRuleOnGpu (cell_size_rule.gpu.test.cc):
+//   ComputeCellSizeFactorCode, ComputeCellSizeFactorTable, ComputeRefinementBoxReachesOutside,
+//   ComputeRefinementEntryIndex, ComputeRefinementLayerExtent, ComputeWantedCellWidth, ComputeWantedSizeLevel
 //
 // Reached by FindNewCellNeighborsOf, through FindNewCellNeighbors (new_cell_neighbors.gpu.test.cc):
 //   ComputeIsPartTouchingBox, ComputeTouchesBiggerCell, ComputeTouchesMuchSmallerCell, FindSizeLevelAtPoint,
