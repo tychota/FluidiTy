@@ -6,8 +6,8 @@ then the ledger (its "Tasks" part holds every hand-back of the first session).
 ## Where things are
 
 - Code: worktree `../FluidiTy-rebuild`, branch `rebuild`. Pushed BASE `74e1861a` (CI green). Local head `578d57bb`
-  (Tasks 1, 2, 4 closed; Tasks 3, 5, 8 landed, their fixes open), then Task 9 31f34710; NOT pushed: gate it in `~/fluidity-gate-check`
-  before a push (the cuda step needs Docker, see Environment). Task 7 may have committed on top since.
+  (Tasks 1, 2, 4 closed; Tasks 3, 5, 8 landed, their fixes open), then Task 9 31f34710, Task 7 b8f22802; NOT pushed: gate it in `~/fluidity-gate-check`
+  before a push (the cuda step needs Docker, see Environment). Task 7 b8f22802 is on top.
 - Other worktrees: `../FluidiTy-fix` (branch `fix-batch-1` from `578d57bb`, fix rounds), `../FluidiTy-proof`
   (branch `task-06`, commit `c7c31dd3`, not landed). Never build or check out `main`.
 - Planning: this checkout, branch `rebuild-planning`. Plan: `docs/superpowers/plans/2026-11-14-rebuild-03-particles.md`.
@@ -26,7 +26,7 @@ then the ledger (its "Tasks" part holds every hand-back of the first session).
 | 4 errors, fields | closed (c826e09a) |
 | 5 formulas | on rebuild (c6b3624a); fix in fix batch 1, commit A (I1, I2, M1..M7) |
 | 6 Lean proof, gate step `proof` | approved on branch task-06 (c7c31dd3); owes Minor 1..5 and a full commit gate |
-| 7 comparison with main | dispatched (Sonnet) on 31f34710; no separate review; report `task-07-report.md` |
+| 7 comparison with main | closed (b8f22802, on rebuild); two quadratic values hand-worked, see ledger |
 | 8 test grids and sets | on rebuild (2df4b4cc); fix in fix batch 1, commit B |
 | 9 arrays, limits, estimate | on rebuild (31f34710); review CHANGES_NEEDED (I1, I2 tests; m1..m10), fix queued; owes a clean gate |
 | 10 to 24 | open |
