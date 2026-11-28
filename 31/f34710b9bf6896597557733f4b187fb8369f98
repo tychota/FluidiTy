@@ -1,0 +1,45 @@
+src/fluidity/particles/particles.no_gpu.test.cc
+  s_56b1e1a5849079::t_88c601c146fe44 1-38
+src/fluidity/particles/particles.test.cc
+  s_56b1e1a5849079::t_42ccb7d2e0437b 1-501,505
+  s_56b1e1a5849079::t_7259070ec0e871 502-504,506-531
+src/fluidity/particles/material_arrays.h
+  s_56b1e1a5849079::t_25da66abf37157 1-56
+src/fluidity/particles/particle_memory_estimate.h
+  s_56b1e1a5849079::t_905e3c44b1c407 1-134
+  s_56b1e1a5849079::t_04bd9a035a8ed9 135-136
+src/fluidity/particles/particles_storage.h
+  s_56b1e1a5849079::t_9d0e5baaf7be1e 1-200
+  s_56b1e1a5849079::t_117b017ad773fd 201
+src/fluidity/particles/particle_memory_estimate.cc
+  s_56b1e1a5849079::t_49369c6b727d6f 1-308
+  s_56b1e1a5849079::t_3f40bd3448c820 309-358
+src/fluidity/particles/particles_cpu.cc
+  s_56b1e1a5849079::t_e07212cd5cea85 1-785
+tests/particles/particles_on_gpu.test.cc
+  s_56b1e1a5849079::t_bc390b94da2be1 1-52
+src/fluidity/particles/CMakeLists.txt
+  s_56b1e1a5849079::t_068334d447be99 1-10,12,26-30
+src/fluidity/particles/particles.h
+  s_56b1e1a5849079::t_9d7aa271a65dc7 1,3-4,8-16,18-31,41-42,46,48-49,77-191
+src/fluidity/particles/particles.shared.gpu_compile.test.cu
+  s_56b1e1a5849079::t_0b89ad90c39612 1-2,18,31-32,36
+tests/particles/CMakeLists.txt
+  s_56b1e1a5849079::t_81b37ca33ade8a 10-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "31f34710b9bf6896597557733f4b187fb8369f98",
+  "prompts": {},
+  "sessions": {
+    "s_56b1e1a5849079": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "136ad03a-4993-4f8e-9f9d-944a01a4a85b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
