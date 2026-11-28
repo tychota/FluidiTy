@@ -22,24 +22,25 @@ then the ledger (its "Tasks" part holds every hand-back of the first session).
 |---|---|
 | 1 contact in place | closed (de2e5dcd + fix), on rebuild |
 | 2 paper: particles, grouping, try | closed (7468b8ff + fix 737654c8), on rebuild |
-| 3 paper: split, merge, count | on rebuild (b6d07173 + fix 93aadde9); round 2 in fix batch 1, commit C |
+| 3 paper: split, merge, count | on rebuild (b6d07173 + fix 93aadde9); round 2 = 6b561fd9 on fix-batch-1, re-review next |
 | 4 errors, fields | closed (c826e09a) |
-| 5 formulas | on rebuild (c6b3624a); fix in fix batch 1, commit A (I1, I2, M1..M7) |
+| 5 formulas | on rebuild (c6b3624a); fix = 352e4582 on fix-batch-1, re-review next |
 | 6 Lean proof, gate step `proof` | approved on branch task-06 (c7c31dd3); owes Minor 1..5 and a full commit gate |
 | 7 comparison with main | closed (b8f22802, on rebuild); two quadratic values hand-worked, see ledger |
-| 8 test grids and sets | on rebuild (2df4b4cc); fix in fix batch 1, commit B |
+| 8 test grids and sets | on rebuild (2df4b4cc); fix = 7f61cb95 on fix-batch-1, re-review next |
 | 9 arrays, limits, estimate | on rebuild (31f34710); review CHANGES_NEEDED (I1, I2 tests; m1..m10), fix queued; owes a clean gate |
 | 10 to 24 | open |
 
 ## What to do first
 
 1. Read the hand-backs that arrive (Task 9 review, Task 7, fix batch 1). If this session ended before they
-   arrived, look at the branches: `git -C ../FluidiTy-rebuild log --oneline 31f34710..` and `git -C
+   arrived (Task 7 and fix batch 1 did arrive and are recorded), look at the branches: `git -C ../FluidiTy-rebuild log --oneline 31f34710..` and `git -C
    ../FluidiTy-fix log --oneline 578d57bb..`, and the files `task-09-review.md`, `task-07-report.md`,
    `fix-batch-1-report.md`. Task 9's design-silent choices (buffer sizes, count rule counts without a total item)
    are listed in the ledger for the review to judge.
-2. Re-review fix batch 1: Opus for commits A (Task 5) and C (Task 3), Sonnet for B (Task 8). Then cherry-pick the
-   batch onto `rebuild` when its worktree is clean, copy notes with
+2. Fix batch 1 is done (`fix-batch-1-report.md`): 7f61cb95 (Task 8), 352e4582 (Task 5, also rewords the glossary
+   entry of kMergeGapFloor: review it), 6b561fd9 (Task 3). Re-review: Opus for 352e4582 and 6b561fd9, Sonnet for
+   7f61cb95. Then cherry-pick them in that order onto `rebuild` when its worktree is clean, copy notes with
    `git notes --ref=claude-session copy -f <old> <new>`.
 3. Task 6: one Sonnet fix agent in `../FluidiTy-proof` for the review's Minor 1..5 and a full commit gate on a
    quiet machine; then cherry-pick onto `rebuild`.
@@ -63,9 +64,9 @@ then the ledger (its "Tasks" part holds every hand-back of the first session).
 
 ## Environment
 
-- colima's VM runs but its Docker daemon does not answer, and the docker context is `desktop-linux` (Docker
-  Desktop not running). The gate's cuda step fails with "Docker is not running". The owner was asked to restart
-  colima. Agents are told not to touch Docker and to record cuda as not run; gate in the clone before a push.
+- colima was stopped by the owner's restart, which failed: `~/.colima/default/colima.yaml` says `disk: 60` but the
+  VM disk is 100 GiB (no shrinking). Start with `colima start --disk 100` (or set disk: 100). The docker context
+  is now `colima`. Until Docker answers, the gate's cuda step fails with "Docker is not running". Agents are told not to touch Docker and to record cuda as not run; gate in the clone before a push.
 - Machine load was very high (load average up to 290) while Mathlib, two CMake builds and the Lean build ran:
   unit tests then fail only on the debug time limit. Rerun before suspecting a change.
 
