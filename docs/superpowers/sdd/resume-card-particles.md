@@ -28,7 +28,7 @@ then the ledger (its "Tasks" part holds every hand-back of the first session).
 | 6 Lean proof, gate step `proof` | approved on branch task-06 (c7c31dd3); owes Minor 1..5 and a full commit gate |
 | 7 comparison with main | dispatched (Sonnet) on 31f34710; no separate review; report `task-07-report.md` |
 | 8 test grids and sets | on rebuild (2df4b4cc); fix in fix batch 1, commit B |
-| 9 arrays, limits, estimate | on rebuild (31f34710); Opus review running (`task-09-review.md`); owes a clean gate |
+| 9 arrays, limits, estimate | on rebuild (31f34710); review CHANGES_NEEDED (I1, I2 tests; m1..m10), fix queued; owes a clean gate |
 | 10 to 24 | open |
 
 ## What to do first
@@ -43,7 +43,7 @@ then the ledger (its "Tasks" part holds every hand-back of the first session).
    `git notes --ref=claude-session copy -f <old> <new>`.
 3. Task 6: one Sonnet fix agent in `../FluidiTy-proof` for the review's Minor 1..5 and a full commit gate on a
    quiet machine; then cherry-pick onto `rebuild`.
-4. Fix Task 9's findings if any; Task 10 onward in plan order (Task 10 brief not written yet).
+4. One fresh Sonnet fix agent for Task 9 (I1, I2, small m's; `task-09-review.md`); Task 10 onward in plan order (Task 10 brief not written yet).
 5. Gate the head in the clone, push `rebuild`, read the CI result once and report it.
 
 ## Rulings made this session (details in the ledger)
