@@ -1,0 +1,38 @@
+proofs/Fluidity/Merge.lean
+  s_56b1e1a5849079::t_79bd9ff127aaa2 1-153
+  s_56b1e1a5849079::t_bda95ae57504e3 154-416
+.github/workflows/checks.yml
+  s_56b1e1a5849079::t_a684cfc1847264 12-14,92-110
+.gitignore
+  s_56b1e1a5849079::t_d0e0b830e2ab2f 12-14
+AGENTS.md
+  s_56b1e1a5849079::t_45c250356ef7b8 533,556,640-645
+proofs/Fluidity.lean
+  s_56b1e1a5849079::t_bc37adca18ccc3 1
+proofs/lake-manifest.json
+  s_56b1e1a5849079::t_dc56b5e312865b 1-96
+proofs/lakefile.toml
+  s_56b1e1a5849079::t_02d186ac95cd49 1-12
+proofs/lean-toolchain
+  s_56b1e1a5849079::t_12a7ab5ac83bc3 1
+tools/check_commit.py
+  s_56b1e1a5849079::t_a6e616bf1484cc 3,41,106-112,155,232-239,618-621,623-627,631,1195-1215,1395,1400-1418
+tools/check_commit_test.py
+  s_56b1e1a5849079::t_c34258c9fdaaa7 4,117-121,168,231,620,728,777,1792-1869
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "58a883b90d9eaa3a5d3bab1d3bbcefe5dc125189",
+  "prompts": {},
+  "sessions": {
+    "s_56b1e1a5849079": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "136ad03a-4993-4f8e-9f9d-944a01a4a85b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
