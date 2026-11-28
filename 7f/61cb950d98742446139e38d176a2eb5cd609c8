@@ -1,0 +1,25 @@
+src/fluidity/particles/testing/particles_support.h
+  s_56b1e1a5849079::t_43b3210d4f6426 8-12,152-153,189-191
+src/fluidity/particles/testing/particles_support.test.cc
+  s_56b1e1a5849079::t_163fc35060a749 11,505-543,548-558,560-565
+tests/particles/CMakeLists.txt
+  s_56b1e1a5849079::t_a9ca618deae7f4 10-21
+tests/particles/cascade_step_a_grid_and_positions.test.cc
+  s_56b1e1a5849079::t_ec97e2618d0c46 1-150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7f61cb950d98742446139e38d176a2eb5cd609c8",
+  "prompts": {},
+  "sessions": {
+    "s_56b1e1a5849079": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "136ad03a-4993-4f8e-9f9d-944a01a4a85b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
