@@ -1,0 +1,27 @@
+docs/glossary.md
+  s_56b1e1a5849079::t_091e43d7c71570 186
+src/fluidity/particles/split_and_merge_math.h
+  s_56b1e1a5849079::t_e8203f60ad0a24 13,19-20,24-25,52-53,99,124-125,148,230
+src/fluidity/particles/split_and_merge_math.test.cc
+  s_56b1e1a5849079::t_58c7e6a2a09eb4 110,113-115,117-124,126-133,157,179-207,259-261,279,360,366-368,400-402,429,461-485
+src/fluidity/particles/testing/split_and_merge_cases.h
+  s_56b1e1a5849079::t_cd5ae50e760e54 6
+tests/particles/merge_energy_on_many_cases.test.cc
+  s_56b1e1a5849079::t_9b0da47fcecd0d 26-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "352e4582c9be5963dbdf041fc49e71b86562d9ee",
+  "prompts": {},
+  "sessions": {
+    "s_56b1e1a5849079": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "136ad03a-4993-4f8e-9f9d-944a01a4a85b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Tycho Tatitscheff <tychot@bam.tech>"
+    }
+  }
+}
